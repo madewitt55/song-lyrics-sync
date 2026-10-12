@@ -1,8 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "esp_err.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/i2s_std.h"
+#include "wifi_connect.h"
+
+static const char *TAG = "main";
+
+#define WIFI_RETRY_INTERVAL_MS 5000 // How often to check for a dropped connection and retry
+#define WIFI_WATCHDOG_STACK_SIZE 3072
+#define WIFI_WATCHDOG_PRIORITY 5
 
 // ---------- I2S43434 Inter-IC Sound MEMS Microphone ----------
 // Controller: ESP32-WROOM-32, Peripheral: ICS43434
@@ -48,12 +57,31 @@ static void i2s_mic_init(void)
     };
     std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT; // Capture only left I2S channel to buffer
 
-    // Initialize and enable I2S channel, bubble up errors to serial
+    // Initialize and enable I2S channel, bubble up errors to serial before aborting
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
 }
 
+/**
+ * @brief Periodically poll WiFi connection state and reconnect on drop
+ *
+ * @note Runs in its own task so its 5s poll interval doesn't block app_main's OLED loop
+ */
+static void wifi_watchdog_task(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(WIFI_RETRY_INTERVAL_MS));
+        if (wifi_connect_get_state() == DISCONNECTED) {
+            ESP_LOGI(TAG, "WiFi disconnected (reason %d), retrying...", wifi_connect_get_last_error());
+            wifi_connect_start();
+        }
+    }
+}
+
 void app_main(void)
 {
+    wifi_connect_start(); // Kick off WiFi connection; non-blocking, returns immediately
     i2s_mic_init(); // Enable I2S hardware to recieve audio from peripheral mic
+
+    xTaskCreate(wifi_watchdog_task, "wifi_watchdog", WIFI_WATCHDOG_STACK_SIZE, NULL, WIFI_WATCHDOG_PRIORITY, NULL);
 }
